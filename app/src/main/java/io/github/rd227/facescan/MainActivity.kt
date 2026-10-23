@@ -5,6 +5,11 @@ import android.content.DialogInterface
 import android.content.DialogInterface.OnShowListener
 import android.content.Intent
 import android.net.Uri
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.FileProvider
+import java.io.File
+import java.util.UUID
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
@@ -15,7 +20,6 @@ import android.webkit.WebStorage
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -36,7 +40,10 @@ class MainActivity : ComponentActivity() {
     private var accountStatus: TextView? = null
     private var photoStatus: TextView? = null
     private var qrStatus: TextView? = null
-    private var photoPreview: ImageView? = null
+    private var photoPreview: PrivacyPhotoView? = null
+    private lateinit var updater: AppUpdater
+    private var cameraFile: File? = null
+    private var previewGeneration = 0
     private var refreshButton: Button? = null
     private var openQrButton: Button? = null
     private var pendingQr: URI? = null
@@ -55,136 +62,169 @@ class MainActivity : ComponentActivity() {
         checkSession()
     }
 
+    private val cameraLauncher = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val capture = cameraFile
+        if (success && capture != null) {
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", capture)
+            savePhoto(uri, capture)
+        } else {
+            capture?.delete()
+        }
+        cameraFile = null
+    }
+    private val cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) takePhoto() else toast("未获得相机权限，可从相册选择照片。")
+    }
+
     public override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         photos = FacePhotoStore(this)
+        cameraFile = savedInstanceState?.getString("photoCapture")?.let { File(cacheDir, "profile-camera/$it") }
+        File(cacheDir, "profile-camera").listFiles()?.forEach { file ->
+            if (file != cameraFile) file.delete()
+        }
         CookieManager.getInstance().setAcceptCookie(true)
-        val scroll = ScrollView(this)
-        scroll.setFillViewport(true)
-        scroll.setBackgroundColor(Ui.BACKGROUND)
-        val content = LinearLayout(this)
-        content.setOrientation(LinearLayout.VERTICAL)
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(Ui.BACKGROUND)
+        }
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(content, FrameLayout.LayoutParams(-1, -2))
         setContentView(scroll)
         Ui.edgeInsets(this, content, 20, 20)
+        content.addView(Ui.text(this, "FACESCAN  /  课堂助手", 11, Ui.BLUE, true))
+        content.addView(Ui.text(this, "你好，准备好上课了吗", 25, Ui.INK, true))
+        content.addView(Ui.text(this, "扫码进入官方页面，照片与会话留在本机。", 13, Ui.MUTED, false))
 
-        content.addView(Ui.text(this, "ANDROID · 本机运行", 12, Ui.BLUE, true))
-        content.addView(Ui.text(this, "FaceScan", 30, Ui.INK, true))
-        content.addView(Ui.text(this, "保存本人照片，扫描课堂二维码。", 15, Ui.MUTED, false))
+        val account = Ui.card(this)
+        account.addView(Ui.text(this, "账号与会话", 17, Ui.INK, true))
+        accountStatus = Ui.text(this, "登录后，可在此确认会话状态", 13, Ui.MUTED, false)
+        accountStatus!!.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        account.addView(accountStatus)
+        val login = Ui.button(this, "官方登录", true).apply {
+            setOnClickListener { openOfficial(OfficialUrl.parse(LOGIN_URL), true) }
+        }
+        refreshButton = Ui.button(this, "检查会话", false).apply { setOnClickListener { checkSession() } }
+        account.addView(Ui.actions(this, login, refreshButton!!))
+        content.addView(account)
 
-        val accountCard = Ui.card(this)
-        accountCard.addView(Ui.text(this, "01  账号会话", 18, Ui.INK, true))
-        accountStatus = Ui.text(this, "尚未检查登录状态", 14, Ui.MUTED, false)
-        accountStatus!!.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE)
-        accountCard.addView(accountStatus)
-        val login = Ui.button(this, "在超星官方页面登录", true)
-        login.setOnClickListener(View.OnClickListener { view: View? ->
-            openOfficial(
-                OfficialUrl.parse(
-                    LOGIN_URL
-                ), true
-            )
+        val qr = Ui.card(this)
+        qr.addView(Ui.text(this, "课堂签到", 17, Ui.INK, true))
+        qrStatus = Ui.text(this, "先扫描二维码或粘贴链接，再确认活动。", 13, Ui.MUTED, false)
+        qrStatus!!.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        qr.addView(qrStatus)
+        val scan = Ui.button(this, "扫描二维码", true).apply {
+            Ui.icon(this, android.R.drawable.ic_menu_camera)
+            setOnClickListener {
+                scanLauncher.launch(ScanOptions().setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    .setPrompt("扫描超星官方课堂二维码").setBeepEnabled(false).setOrientationLocked(false))
+            }
+        }
+        val paste = Ui.button(this, "粘贴链接", false).apply { setOnClickListener { pasteLink() } }
+        qr.addView(Ui.actions(this, scan, paste))
+        openQrButton = Ui.button(this, "确认并打开官方页面  →", false).apply {
+            isEnabled = false
+            setOnClickListener { pendingQr?.let { openOfficial(it, false) } }
+        }
+        qr.addView(openQrButton)
+        content.addView(qr)
+
+        val photo = Ui.card(this)
+        photo.addView(Ui.text(this, "我的照片", 17, Ui.INK, true))
+        photoStatus = Ui.text(this, "本机加密保存 · 预览默认模糊", 12, Ui.MUTED, false)
+        photo.addView(photoStatus)
+        photoPreview = PrivacyPhotoView(this)
+        photo.addView(photoPreview, LinearLayout.LayoutParams(-1, Ui.dp(this, 180)).apply {
+            topMargin = Ui.dp(this@MainActivity, 10)
         })
-        accountCard.addView(login)
-        refreshButton = Ui.button(this, "检查本机登录会话", false)
-        refreshButton!!.setOnClickListener(View.OnClickListener { view: View? -> checkSession() })
-        accountCard.addView(refreshButton)
-        content.addView(accountCard)
+        val capture = Ui.button(this, "拍摄照片", true).apply {
+            Ui.icon(this, android.R.drawable.ic_menu_camera)
+            setOnClickListener { takePhoto() }
+        }
+        val choose = Ui.button(this, "相册选择", false).apply {
+            Ui.icon(this, android.R.drawable.ic_menu_gallery)
+            setOnClickListener { photoLauncher.launch(arrayOf("image/*")) }
+        }
+        photo.addView(Ui.actions(this, capture, choose))
+        val privacy = Ui.button(this, "切换照片模糊", false).apply { setOnClickListener { photoPreview!!.toggle() } }
+        photo.addView(privacy)
+        photo.addView(Ui.text(this, "模糊仅用于预览，不改变上传照片。保存照片不代表已通过官方人脸验证。", 11, Ui.MUTED, false))
+        content.addView(photo)
 
-        val qrCard = Ui.card(this)
-        qrCard.addView(Ui.text(this, "02  二维码签到", 18, Ui.INK, true))
-        qrStatus = Ui.text(this, "扫码后先确认活动，再打开官方签到页。", 14, Ui.MUTED, false)
-        qrStatus!!.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE)
-        qrCard.addView(qrStatus)
-        val scan = Ui.button(this, "扫描课堂二维码", true)
-        scan.setOnClickListener(View.OnClickListener { view: View? ->
-            val options = ScanOptions()
-                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                .setPrompt("扫描超星官方课堂二维码")
-                .setBeepEnabled(false).setOrientationLocked(false)
-            scanLauncher.launch(options)
-        })
-        qrCard.addView(scan)
-        val paste = Ui.button(this, "粘贴签到链接", false)
-        paste.setOnClickListener(View.OnClickListener { view: View? -> pasteLink() })
-        qrCard.addView(paste)
-        openQrButton = Ui.button(this, "打开官方签到页", false)
-        openQrButton!!.setEnabled(false)
-        openQrButton!!.setOnClickListener(View.OnClickListener { view: View? ->
-            if (pendingQr != null) openOfficial(
-                pendingQr!!,
-                false
-            )
-        })
-        qrCard.addView(openQrButton)
-        content.addView(qrCard)
+        val settings = Ui.card(this)
+        settings.addView(Ui.text(this, "应用与本机资料", 17, Ui.INK, true))
+        val version = packageManager.getPackageInfo(packageName, 0).versionName
+        val updateStatus = Ui.text(this, "当前版本 $version", 12, Ui.MUTED, false)
+        updateStatus.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        settings.addView(updateStatus)
+        val update = Ui.button(this, "检查更新", false).apply { setOnClickListener { updater.action() } }
+        updater = AppUpdater(this, updateStatus, update)
+        val clear = Ui.button(this, "清除资料", false).apply { setOnClickListener { confirmClear() } }
+        settings.addView(Ui.actions(this, update, clear))
+        settings.addView(Ui.text(this, "登录、验证与签到由超星官方处理。", 11, Ui.MUTED, false))
+        content.addView(settings)
+        updater.check()
+    }
 
-        val photoCard = Ui.card(this)
-        photoCard.addView(Ui.text(this, "03  本人人脸照片", 18, Ui.INK, true))
-        photoStatus = Ui.text(this, "还没有保存照片", 14, Ui.MUTED, false)
-        photoCard.addView(photoStatus)
-        photoPreview = ImageView(this)
-        photoPreview!!.setScaleType(ImageView.ScaleType.CENTER_INSIDE)
-        photoPreview!!.setContentDescription("本机保存的人脸照片预览")
-        photoPreview!!.setBackground(Ui.rounded(this, Ui.BACKGROUND, 14))
-        photoCard.addView(photoPreview, LinearLayout.LayoutParams(-1, Ui.dp(this, 190)))
-        val choose = Ui.button(this, "选择并保存本人照片", false)
-        choose.setOnClickListener(View.OnClickListener { view: View? ->
-            photoLauncher.launch(arrayOf("image/*"))
-        })
-        photoCard.addView(choose)
-        photoCard.addView(
-            Ui.text(
-                this,
-                "照片加密保存在本机。官方页面允许选图时，可在上传菜单中选用；本机保存不代表官方人脸验证已通过。",
-                12,
-                Ui.MUTED,
-                false
-            )
-        )
-        content.addView(photoCard)
+    private fun takePhoto() {
+        if (photoBusy || cameraFile != null) return
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+            return
+        }
+        val folder = File(cacheDir, "profile-camera")
+        if (!folder.isDirectory && !folder.mkdirs()) { toast("无法创建拍照临时文件。"); return }
+        val capture = File(folder, "${UUID.randomUUID()}.jpg")
+        cameraFile = capture
+        try {
+            cameraLauncher.launch(FileProvider.getUriForFile(this, "$packageName.files", capture))
+        } catch (error: android.content.ActivityNotFoundException) {
+            cameraFile = null
+            capture.delete()
+            toast("没有可用的相机应用，请从相册选择。")
+        }
+    }
 
-        val info = Ui.card(this)
-        info.addView(Ui.text(this, "0.1 实验版", 16, Ui.INK, true))
-        info.addView(
-            Ui.text(
-                this,
-                "不连接本项目服务器。账号登录、验证和签到由超星官方服务处理。官方页面要求实时拍摄时，仍需完成相应操作。",
-                13,
-                Ui.MUTED,
-                false
-            )
-        )
-        val clear = Ui.button(this, "清除本机照片与登录状态", false)
-        clear.setOnClickListener(View.OnClickListener { view: View? -> confirmClear() })
-        info.addView(clear)
-        content.addView(info)
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString("photoCapture", cameraFile?.name)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onPause() {
+        photoPreview!!.hidePhoto()
+        super.onPause()
     }
 
     override fun onResume() {
         super.onResume()
         loadPreview()
+        updater.onResume()
     }
 
     private fun loadPreview() {
+        val generation = ++previewGeneration
         if (!photos!!.exists()) {
-            photoPreview!!.setImageDrawable(null)
+            photoPreview!!.setPhoto(null)
             photoStatus!!.setText("还没有保存照片")
             return
         }
         worker.execute(Runnable {
             try {
                 val bitmap = photos!!.preview()
+                val blurred = PrivacyPhotoView.legacyBlur(bitmap)
                 runOnUiThread(Runnable updatePreview@{
-                    if (isDestroyed()) {
+                    if (isDestroyed() || generation != previewGeneration) {
+                        blurred?.recycle()
                         bitmap.recycle()
                         return@updatePreview
                     }
-                    photoPreview!!.setImageBitmap(bitmap)
+                    photoPreview!!.setPhoto(bitmap, blurred)
                     photoStatus!!.setText("已保存到本机 · 尚不代表官方验证通过")
                 })
             } catch (exception: Exception) {
-                ui(Runnable { photoStatus!!.setText("照片无法解密，请重新选择。") })
+                ui(Runnable {
+                    if (generation == previewGeneration) photoStatus!!.setText("照片无法解密，请重新选择。")
+                })
             }
         })
     }
@@ -272,8 +312,8 @@ class MainActivity : ComponentActivity() {
         else startActivity(intent)
     }
 
-    private fun savePhoto(source: Uri) {
-        if (photoBusy) return
+    private fun savePhoto(source: Uri, temporary: File? = null) {
+        if (photoBusy) { temporary?.delete(); return }
         photoBusy = true
         photoStatus!!.setText("正在压缩并加密保存…")
         worker.execute(Runnable {
@@ -289,6 +329,8 @@ class MainActivity : ComponentActivity() {
                     photoBusy = false
                     photoStatus!!.setText("照片保存失败，请换一张图片重试。")
                 })
+            } finally {
+                temporary?.delete()
             }
         })
     }
@@ -303,6 +345,7 @@ class MainActivity : ComponentActivity() {
             .setNegativeButton("取消", null).setPositiveButton(
                 "清除",
                 DialogInterface.OnClickListener { dialog: DialogInterface?, which: Int ->
+                    ++previewGeneration
                     clearingSession = true
                     refreshButton!!.setEnabled(false)
                     synchronized(SESSION_EPOCH) { SESSION_EPOCH.incrementAndGet() }
@@ -318,7 +361,7 @@ class MainActivity : ComponentActivity() {
                         try {
                             photos!!.delete()
                             ui(Runnable {
-                                photoPreview!!.setImageDrawable(null)
+                                photoPreview!!.setPhoto(null)
                                 photoStatus!!.setText("还没有保存照片")
                             })
                         } catch (exception: Exception) {
@@ -340,6 +383,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        updater.close()
+        photoPreview!!.setPhoto(null)
         worker.shutdownNow()
         super.onDestroy()
     }

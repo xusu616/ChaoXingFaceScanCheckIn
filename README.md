@@ -7,7 +7,9 @@
 - 在独立 WebView 中打开超星官方登录页面，登录信息直接交给官方页面。
 - 使用手机原生 HTTP 读取官方会话状态，与网页登录共享本机 Cookie。
 - 扫描二维码或手动粘贴超星官方链接，提取活动编号并在打开前确认。
-- 从系统相册选择本人照片，缩放后使用 Android Keystore + AES-GCM 加密保存。
+- 拍照或从系统相册选择本人照片，缩放后使用 Android Keystore + AES-GCM 加密保存。
+- 照片预览默认模糊，点击照片或“切换照片模糊”可查看或重新模糊，离开页面后恢复隐藏；上传仍使用原照片。
+- 每次进程冷启动检查一次 GitHub 正式 Release，支持下载 APK 并交由系统安装器安装。
 - 官方网页允许选择图片时，提供“使用本机保存的本人照片”选项；要求实时拍摄时打开相机。
 - 清除本机照片与登录状态。
 - GitHub Actions 自动执行测试、Android Lint 和 APK 构建。
@@ -28,13 +30,22 @@
 
 ## 使用
 
-1. 点击“在超星官方页面登录”，完成官方登录后点“完成”。
-2. 点击“检查本机登录会话”，确认是否成功读取账号。
-3. 在“本人人脸照片”中选择并保存自己的照片。
+1. 点击“官方登录”，完成官方登录后点“完成”。
+2. 点击“检查会话”，确认是否成功读取账号。
+3. 在“我的照片”中拍照或从相册选择自己的照片。
 4. 扫描课堂二维码，确认来源和活动编号，然后打开官方签到页。
 5. 官方页面出现图片选择器时，可选择本机照片；如要求实时拍摄，按页面要求完成。
 
 扫码本身只解析链接，不会由 App 自动提交签到。不支持第三方短链接，也不会将账号提交给第三方签到服务。
+
+## 应用更新
+
+冷启动通过 `https://api.github.com/repos/rD227/ChaoXingFaceScanCheckIn/releases/latest` 检查更新，只选择名称为 `app-release.apk` 的已上传附件。下载由系统下载管理器完成，不打开浏览器，下载完成后点击“安装更新”。第一次安装需要在系统设置中允许 FaceScan 安装应用。
+
+- “稍后再说”仅关闭本次提示，下次冷启动仍检查。
+- “忽略此次更新”保存该 Release 标签，后续自动检查不再提示此版本，更高版本仍会提示；手动检查可重新显示已忽略版本。
+- 发布时使用 `v0.1.1` 等数字版本标签，增加 `app/build.gradle` 的 `versionCode` 和 `versionName`，并始终使用相同的正式签名。系统安装器会校验签名。
+- 不支持静默安装；草稿和预发布版本不会作为正式更新提示。
 
 ## 本地构建
 
@@ -56,13 +67,16 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ```text
 app/src/main/java/io/github/rd227/facescan/
-├── MainActivity.java          # 首页、扫码、照片管理与会话检查
-├── OfficialWebActivity.java   # 官方网页、相机权限与图片选择器
-├── OfficialHttp.java          # 原生 HTTP、跳转与响应大小限制
-├── OfficialUrl.java           # 链接校验与活动编号解析
-├── WebSessionCookies.java     # 原生 HTTP 与 WebView 会话共享
-├── FacePhotoStore.java        # 私有目录中的加密照片
-└── FaceScanApplication.java   # 启动时清理遗留上传临时文件
+├── MainActivity.kt          # 首页、扫码、照片管理与会话检查
+├── OfficialWebActivity.kt   # 官方网页、相机权限与图片选择器
+├── OfficialHttp.kt          # 原生 HTTP、跳转与响应大小限制
+├── OfficialUrl.kt           # 链接校验与活动编号解析
+├── WebSessionCookies.kt     # 原生 HTTP 与 WebView 会话共享
+├── FacePhotoStore.kt        # 私有目录中的加密照片
+├── PrivacyPhotoView.kt        # 仅预览使用的可切换模糊
+├── AppUpdater.kt              # Release 检查、下载与系统安装
+├── ReleaseVersion.kt          # 版本比较
+└── FaceScanApplication.kt   # 启动时清理遗留上传临时文件
 ```
 
 应用不会连接本项目的服务器。访问官方服务时，必要的会话数据仍会发往超星；选择上传照片时，会临时解密图片交给官方网页上传。临时文件在关闭官方页面或下一次启动应用时清理。

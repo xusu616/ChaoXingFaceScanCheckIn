@@ -5,6 +5,9 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.content.res.ColorStateList
+import android.graphics.drawable.StateListDrawable
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
@@ -14,10 +17,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 
 internal object Ui {
-    val BLUE: Int = Color.rgb(37, 99, 235)
-    val INK: Int = Color.rgb(26, 39, 62)
-    val MUTED: Int = Color.rgb(100, 116, 139)
-    val BACKGROUND: Int = Color.rgb(243, 246, 251)
+    val BLUE: Int = Color.rgb(46, 87, 209)
+    val INK: Int = Color.rgb(27, 36, 55)
+    val MUTED: Int = Color.rgb(112, 122, 143)
+    val BACKGROUND: Int = Color.rgb(242, 244, 248)
 
     fun dp(context: Context, value: Int): Int {
         return Math.round(value * context.getResources().getDisplayMetrics().density)
@@ -44,9 +47,9 @@ internal object Ui {
     fun card(context: Context): LinearLayout {
         val card = LinearLayout(context)
         card.setOrientation(LinearLayout.VERTICAL)
-        val padding = dp(context, 18)
+        val padding = dp(context, 20)
         card.setPadding(padding, padding, padding, padding)
-        card.setBackground(rounded(context, Color.WHITE, 22))
+        card.setBackground(rounded(context, Color.WHITE, 20))
         val params = LinearLayout.LayoutParams(-1, -2)
         params.topMargin = dp(context, 14)
         card.setLayoutParams(params)
@@ -55,23 +58,58 @@ internal object Ui {
 
     fun button(context: Context, label: String?, primary: Boolean): Button {
         val button = Button(context)
+        button.stateListAnimator = null
+        button.elevation = 0f
         button.setText(label)
-        button.setTextSize(15f)
+        button.setTextSize(14f)
         button.setAllCaps(false)
-        button.setTextColor(if (primary) Color.WHITE else BLUE)
-        button.setMinHeight(dp(context, 50))
+        val colors = ColorStateList(arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(MUTED, if (primary) Color.WHITE else BLUE))
+        button.setTextColor(colors)
+        button.compoundDrawableTintList = colors
+        button.setMinHeight(dp(context, 48))
+        button.minimumWidth = 0
+        button.setPadding(dp(context, 12), 0, dp(context, 12), 0)
         button.setBackgroundTintList(null)
-        button.setBackground(rounded(context, if (primary) BLUE else Color.rgb(235, 241, 255), 14))
-        val params = LinearLayout.LayoutParams(-1, dp(context, 50))
-        params.topMargin = dp(context, 10)
+        button.background = StateListDrawable().apply {
+            addState(intArrayOf(-android.R.attr.state_enabled), rounded(context, BACKGROUND, 12))
+            addState(intArrayOf(android.R.attr.state_pressed), rounded(context, if (primary) 0xFF2345AD.toInt() else 0xFFDCE5FB.toInt(), 12))
+            addState(intArrayOf(), rounded(context, if (primary) BLUE else 0xFFEEF2FC.toInt(), 12))
+        }
+        val params = LinearLayout.LayoutParams(-2, dp(context, 48))
+        params.topMargin = dp(context, 12)
         button.setLayoutParams(params)
         return button
+    }
+
+    fun actions(context: Context, vararg buttons: Button): LinearLayout {
+        return LinearLayout(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            isBaselineAligned = false
+            setPadding(0, dp(context, 12), 0, 0)
+            buttons.forEachIndexed { index, button ->
+                addView(button, LinearLayout.LayoutParams(0, dp(context, 48), 1f).apply {
+                    if (index > 0) marginStart = dp(context, 10)
+                })
+            }
+        }
+    }
+
+    fun icon(button: Button, resource: Int) {
+        val drawable = button.context.getDrawable(resource)!!
+        val size = dp(button.context, 18)
+        drawable.setBounds(0, 0, size, size)
+        button.setCompoundDrawablesRelative(drawable, null, null, null)
+        button.compoundDrawablePadding = dp(button.context, 6)
     }
 
     fun edgeInsets(activity: Activity, view: View, horizontalDp: Int, verticalDp: Int) {
         WindowCompat.setDecorFitsSystemWindows(activity.window, false)
         WindowCompat.getInsetsController(activity.window, activity.window.decorView)
-            .isAppearanceLightStatusBars = true
+            .apply {
+                isAppearanceLightStatusBars = true
+                isAppearanceLightNavigationBars = true
+            }
         val horizontal = dp(activity, horizontalDp)
         val vertical = dp(activity, verticalDp)
         ViewCompat.setOnApplyWindowInsetsListener(view) { target, insets ->
