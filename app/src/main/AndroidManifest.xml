@@ -9,11 +9,12 @@
     <application
         android:name=".FaceScanApplication"
         android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="false"
         android:icon="@drawable/ic_launcher"
-        android:label="FaceScan 实验版"
+        android:label="FaceScan"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity android:name=".OfficialWebActivity" android:exported="false"

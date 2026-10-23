@@ -1,7 +1,6 @@
 package io.github.rd227.facescan
 
 import android.Manifest
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.DialogInterface
 import android.content.Intent
@@ -26,6 +25,9 @@ import android.webkit.WebViewClient
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
 import java.io.File
 import java.net.URI
@@ -34,7 +36,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 /** Official pages run in a separate WebView with no JavaScript-to-native bridge.  */
-class OfficialWebActivity : Activity() {
+class OfficialWebActivity : ComponentActivity() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private var web: WebView? = null
     private var status: TextView? = null
@@ -46,8 +48,41 @@ class OfficialWebActivity : Activity() {
     private var cameraUri: Uri? = null
     private var cameraFile: File? = null
 
-    public override fun onCreate(state: Bundle?) {
-        super.onCreate(state)
+    private val browserBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            web!!.goBack()
+        }
+    }
+    private val pickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        var selected = FileChooserParams.parseResult(result.resultCode, result.data)
+        if (selected != null) for (uri in selected) {
+            if (uri == null || "content" != uri.scheme) {
+                selected = null
+                break
+            }
+        }
+        finishFile(selected)
+    }
+    private val captureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = cameraUri
+        val photo = cameraFile
+        finishFile(
+            if (result.resultCode == RESULT_OK && uri != null && photo != null && photo.length() > 0)
+                arrayOf<Uri?>(uri)
+            else
+                null
+        )
+        cameraUri = null
+    }
+    private val cameraPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val action = if (granted) pendingCamera else pendingCameraDenied
+        pendingCamera = null
+        pendingCameraDenied = null
+        action?.run()
+    }
+
+    public override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
         val target: URI
         try {
             target = OfficialUrl.parse(getIntent().getStringExtra("url"))
@@ -72,6 +107,7 @@ class OfficialWebActivity : Activity() {
         root.addView(toolbar)
 
         web = WebView(this)
+        onBackPressedDispatcher.addCallback(this, browserBackCallback)
         root.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
         val settings = web!!.getSettings()
         settings.setJavaScriptEnabled(true)
@@ -84,6 +120,10 @@ class OfficialWebActivity : Activity() {
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
         web!!.setWebViewClient(object : WebViewClient() {
+            override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                browserBackCallback.isEnabled = view.canGoBack()
+            }
+
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 if (!OfficialUrl.isAllowed(url)) {
                     view.stopLoading()
@@ -235,12 +275,15 @@ class OfficialWebActivity : Activity() {
                 }
             }
         })
-        if (state == null || web!!.restoreState(state) == null) web!!.loadUrl(target.toASCIIString())
+        if (savedInstanceState == null || web!!.restoreState(savedInstanceState) == null) {
+            web!!.loadUrl(target.toASCIIString())
+        }
+        browserBackCallback.isEnabled = web!!.canGoBack()
     }
 
     private fun launchPicker(params: FileChooserParams) {
         try {
-            startActivityForResult(params.createIntent(), CHOOSE_FILE)
+            pickerLauncher.launch(params.createIntent())
         } catch (exception: Exception) {
             toast("没有可用的文件选择器。")
             finishFile(null)
@@ -258,7 +301,7 @@ class OfficialWebActivity : Activity() {
                 val capture = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
                 capture.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri)
                 capture.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                startActivityForResult(capture, CAPTURE)
+                captureLauncher.launch(capture)
             } catch (exception: Exception) {
                 toast("无法打开相机。")
                 finishFile(null)
@@ -277,45 +320,7 @@ class OfficialWebActivity : Activity() {
         } else {
             pendingCamera = granted
             pendingCameraDenied = denied
-            requestPermissions(arrayOf<String>(Manifest.permission.CAMERA), CAMERA_PERMISSION)
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        request: Int,
-        permissions: Array<String?>,
-        results: IntArray
-    ) {
-        super.onRequestPermissionsResult(request, permissions, results)
-        if (request != CAMERA_PERMISSION) return
-        val action = if (results.size > 0 && results[0] == PackageManager.PERMISSION_GRANTED)
-            pendingCamera
-        else
-            pendingCameraDenied
-        pendingCamera = null
-        pendingCameraDenied = null
-        if (action != null) action.run()
-    }
-
-    override fun onActivityResult(request: Int, result: Int, data: Intent?) {
-        super.onActivityResult(request, result, data)
-        if (request == CAPTURE) {
-            finishFile(
-                if (result == RESULT_OK && cameraUri != null && cameraFile != null && cameraFile!!.length() > 0)
-                    arrayOf<Uri?>(cameraUri)
-                else
-                    null
-            )
-            cameraUri = null
-        } else if (request == CHOOSE_FILE) {
-            var selected = FileChooserParams.parseResult(result, data)
-            if (selected != null) for (uri in selected) {
-                if (uri == null || "content" != uri.getScheme()) {
-                    selected = null
-                    break
-                }
-            }
-            finishFile(selected)
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
@@ -325,9 +330,9 @@ class OfficialWebActivity : Activity() {
         if (callback != null) callback.onReceiveValue(value)
     }
 
-    override fun onSaveInstanceState(state: Bundle) {
-        if (web != null) web!!.saveState(state)
-        super.onSaveInstanceState(state)
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (web != null) web!!.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onPause() {
@@ -339,11 +344,6 @@ class OfficialWebActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (web != null) web!!.onResume()
-    }
-
-    override fun onBackPressed() {
-        if (web != null && web!!.canGoBack()) web!!.goBack()
-        else super.onBackPressed()
     }
 
     override fun onDestroy() {
@@ -364,11 +364,5 @@ class OfficialWebActivity : Activity() {
 
     private fun toast(message: String?) {
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-    }
-
-    companion object {
-        private const val CHOOSE_FILE = 2001
-        private const val CAPTURE = 2002
-        private const val CAMERA_PERMISSION = 2003
     }
 }

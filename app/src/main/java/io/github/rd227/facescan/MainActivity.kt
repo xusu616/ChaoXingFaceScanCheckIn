@@ -1,10 +1,10 @@
 package io.github.rd227.facescan
 
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.DialogInterface
 import android.content.DialogInterface.OnShowListener
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
@@ -20,14 +20,17 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import com.google.zxing.integration.android.IntentIntegrator
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 import java.net.URI
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private val worker: ExecutorService = Executors.newSingleThreadExecutor()
     private var photos: FacePhotoStore? = null
     private var accountStatus: TextView? = null
@@ -41,8 +44,19 @@ class MainActivity : Activity() {
     private var clearingSession = false
     private var photoBusy = false
 
-    public override fun onCreate(state: Bundle?) {
-        super.onCreate(state)
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val contents = result.contents
+        if (contents != null) acceptQr(contents)
+    }
+    private val photoLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { source ->
+        if (source != null) savePhoto(source)
+    }
+    private val loginLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        checkSession()
+    }
+
+    public override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
         photos = FacePhotoStore(this)
         CookieManager.getInstance().setAcceptCookie(true)
         val scroll = ScrollView(this)
@@ -55,7 +69,7 @@ class MainActivity : Activity() {
         Ui.edgeInsets(this, content, 20, 20)
 
         content.addView(Ui.text(this, "ANDROID · 本机运行", 12, Ui.BLUE, true))
-        content.addView(Ui.text(this, "FaceScan 实验室", 30, Ui.INK, true))
+        content.addView(Ui.text(this, "FaceScan", 30, Ui.INK, true))
         content.addView(Ui.text(this, "保存本人照片，扫描课堂二维码。", 15, Ui.MUTED, false))
 
         val accountCard = Ui.card(this)
@@ -84,10 +98,11 @@ class MainActivity : Activity() {
         qrCard.addView(qrStatus)
         val scan = Ui.button(this, "扫描课堂二维码", true)
         scan.setOnClickListener(View.OnClickListener { view: View? ->
-            IntentIntegrator(this)
-                .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+            val options = ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                 .setPrompt("扫描超星官方课堂二维码")
-                .setBeepEnabled(false).setOrientationLocked(false).initiateScan()
+                .setBeepEnabled(false).setOrientationLocked(false)
+            scanLauncher.launch(options)
         })
         qrCard.addView(scan)
         val paste = Ui.button(this, "粘贴签到链接", false)
@@ -115,10 +130,7 @@ class MainActivity : Activity() {
         photoCard.addView(photoPreview, LinearLayout.LayoutParams(-1, Ui.dp(this, 190)))
         val choose = Ui.button(this, "选择并保存本人照片", false)
         choose.setOnClickListener(View.OnClickListener { view: View? ->
-            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
-            intent.setType("image/*")
-            intent.addCategory(Intent.CATEGORY_OPENABLE)
-            startActivityForResult(intent, PICK_PHOTO)
+            photoLauncher.launch(arrayOf("image/*"))
         })
         photoCard.addView(choose)
         photoCard.addView(
@@ -256,42 +268,29 @@ class MainActivity : Activity() {
     private fun openOfficial(uri: URI, login: Boolean) {
         val intent = Intent(this, OfficialWebActivity::class.java)
         intent.putExtra("url", uri.toASCIIString())
-        if (login) startActivityForResult(intent, LOGIN)
+        if (login) loginLauncher.launch(intent)
         else startActivity(intent)
     }
 
-    override fun onActivityResult(request: Int, result: Int, data: Intent?) {
-        super.onActivityResult(request, result, data)
-        val scan = IntentIntegrator.parseActivityResult(request, result, data)
-        if (scan != null) {
-            if (scan.getContents() != null) acceptQr(scan.getContents())
-            return
-        }
-        if (request == LOGIN) {
-            checkSession()
-            return
-        }
-        val source = data?.getData()
-        if (request == PICK_PHOTO && result == RESULT_OK && source != null) {
-            if (photoBusy) return
-            photoBusy = true
-            photoStatus!!.setText("正在压缩并加密保存…")
-            worker.execute(Runnable {
-                try {
-                    photos!!.save(source)
-                    ui(Runnable {
-                        photoBusy = false
-                        loadPreview()
-                        toast("照片已保存到本机。")
-                    })
-                } catch (exception: Exception) {
-                    ui(Runnable {
-                        photoBusy = false
-                        photoStatus!!.setText("照片保存失败，请换一张图片重试。")
-                    })
-                }
-            })
-        }
+    private fun savePhoto(source: Uri) {
+        if (photoBusy) return
+        photoBusy = true
+        photoStatus!!.setText("正在压缩并加密保存…")
+        worker.execute(Runnable {
+            try {
+                photos!!.save(source)
+                ui(Runnable {
+                    photoBusy = false
+                    loadPreview()
+                    toast("照片已保存到本机。")
+                })
+            } catch (exception: Exception) {
+                ui(Runnable {
+                    photoBusy = false
+                    photoStatus!!.setText("照片保存失败，请换一张图片重试。")
+                })
+            }
+        })
     }
 
     private fun confirmClear() {
@@ -347,8 +346,6 @@ class MainActivity : Activity() {
 
     companion object {
         val SESSION_EPOCH: AtomicLong = AtomicLong()
-        private const val PICK_PHOTO = 1001
-        private const val LOGIN = 1002
         private const val ACCOUNT_URL = "https://sso.chaoxing.com/apis/login/userLogin4Uname.do"
         private const val LOGIN_URL =
             "https://passport2.chaoxing.com/login?refer=https%3A%2F%2Fi.chaoxing.com"

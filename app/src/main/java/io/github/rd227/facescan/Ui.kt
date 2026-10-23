@@ -5,12 +5,13 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.view.View
-import android.view.WindowInsets
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 internal object Ui {
     val BLUE: Int = Color.rgb(37, 99, 235)
@@ -68,22 +69,24 @@ internal object Ui {
     }
 
     fun edgeInsets(activity: Activity, view: View, horizontalDp: Int, verticalDp: Int) {
-        if (Build.VERSION.SDK_INT >= 30) activity.getWindow().setDecorFitsSystemWindows(false)
-        activity.getWindow().getDecorView().setSystemUiVisibility(
-            (View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR)
-        )
+        WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+        WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+            .isAppearanceLightStatusBars = true
         val horizontal = dp(activity, horizontalDp)
         val vertical = dp(activity, verticalDp)
-        view.setOnApplyWindowInsetsListener(View.OnApplyWindowInsetsListener { target: View?, insets: WindowInsets? ->
-            target!!.setPadding(
-                horizontal + insets!!.getSystemWindowInsetLeft(),
-                vertical + insets.getSystemWindowInsetTop(),
-                horizontal + insets.getSystemWindowInsetRight(),
-                vertical + insets.getSystemWindowInsetBottom()
+        ViewCompat.setOnApplyWindowInsetsListener(view) { target, insets ->
+            val safeInsets = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+                    or WindowInsetsCompat.Type.ime()
+            )
+            target.setPadding(
+                horizontal + safeInsets.left,
+                vertical + safeInsets.top,
+                horizontal + safeInsets.right,
+                vertical + safeInsets.bottom
             )
             insets
-        })
-        view.requestApplyInsets()
+        }
+        ViewCompat.requestApplyInsets(view)
     }
 }
