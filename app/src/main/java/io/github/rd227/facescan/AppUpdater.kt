@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.pm.PackageInfoCompat
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.File
@@ -98,6 +99,40 @@ internal class AppUpdater(
     private data class Release(val tag: String, val notes: String, val url: String, val id: Long)
 
     private fun fetch(current: String): Release {
+        val githubError = try {
+            return fetchFromGitHub(current)
+        } catch (error: IOException) {
+            error
+        } catch (error: Exception) {
+            IOException("GitHub 检查失败", error)
+        }
+        return try {
+            fetchFromGitLab(current)
+        } catch (gitlabError: IOException) {
+            gitlabError.addSuppressed(githubError)
+            throw gitlabError
+        } catch (gitlabError: Exception) {
+            val error = IOException("更新检查失败", gitlabError)
+            error.addSuppressed(githubError)
+            throw error
+        }
+    }
+
+    private fun readResponseBody(connection: HttpURLConnection): String {
+        return connection.inputStream.bufferedReader().use { reader ->
+            val text = StringBuilder()
+            val buffer = CharArray(8192)
+            while (true) {
+                val count = reader.read(buffer)
+                if (count == -1) break
+                if (text.length + count > 1024 * 1024) throw IOException("Release 响应过大")
+                text.append(buffer, 0, count)
+            }
+            text.toString()
+        }
+    }
+
+    private fun fetchFromGitHub(current: String): Release {
         val connection = URL("https://api.github.com/repos/rD227/ChaoXingFaceScanCheckIn/releases/latest")
             .openConnection() as HttpURLConnection
         try {
@@ -111,17 +146,7 @@ internal class AppUpdater(
                 403, 429 -> throw IOException("GitHub 请求受限，请稍后重试")
                 else -> throw IOException("更新检查失败：HTTP ${connection.responseCode}")
             }
-            val body = connection.inputStream.bufferedReader().use { reader ->
-                val text = StringBuilder()
-                val buffer = CharArray(8192)
-                while (true) {
-                    val count = reader.read(buffer)
-                    if (count == -1) break
-                    if (text.length + count > 1024 * 1024) throw IOException("Release 响应过大")
-                    text.append(buffer, 0, count)
-                }
-                text.toString()
-            }
+            val body = readResponseBody(connection)
             val json = JSONObject(body)
             if (json.getBoolean("draft") || json.getBoolean("prerelease")) throw IOException("暂无正式 Release")
             val assets = json.getJSONArray("assets")
@@ -137,6 +162,54 @@ internal class AppUpdater(
                 return Release(json.getString("tag_name"), json.optString("body"), url, asset.getLong("id"))
             }
             throw IOException("最新 Release 尚未上传 app-release.apk")
+        } catch (error: JSONException) {
+            throw IOException("Release 数据格式无效", error)
+        } finally { connection.disconnect() }
+    }
+
+    private fun fetchFromGitLab(current: String): Release {
+        val connection = URL("https://gitlab.com/api/v4/projects/xusu616%2FChaoXingFaceScanCheckIn/releases?per_page=1")
+            .openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 10000
+            connection.readTimeout = 15000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("User-Agent", "FaceScan/$current")
+            when (connection.responseCode) {
+                200 -> Unit
+                404 -> throw IOException("暂无正式 Release，可稍后重试")
+                403, 429 -> throw IOException("GitLab 请求受限，请稍后重试")
+                else -> throw IOException("更新检查失败：HTTP ${connection.responseCode}")
+            }
+            val body = readResponseBody(connection)
+            val releases = JSONArray(body)
+            if (releases.length() == 0) throw IOException("暂无正式 Release，可稍后重试")
+            val release = releases.getJSONObject(0)
+            val tag = release.getString("tag_name")
+            val notes = release.optString("description")
+            val assets = release.optJSONObject("assets") ?: throw IOException("Release 缺少附件列表")
+            val links = assets.optJSONArray("links") ?: throw IOException("Release 缺少附件列表")
+            var apkLink: JSONObject? = null
+            for (index in 0 until links.length()) {
+                val link = links.getJSONObject(index)
+                val name = link.optString("name")
+                if (name == "app-release.apk") {
+                    apkLink = link
+                    break
+                } else if (name.endsWith(".apk") && apkLink == null) {
+                    apkLink = link
+                }
+            }
+            val target = apkLink ?: throw IOException("最新 Release 尚未上传 app-release.apk")
+            val url = target.getString("url")
+            val uri = Uri.parse(url)
+            val isGitLabOrHttps = url.startsWith("https://gitlab.com/") ||
+                (uri.scheme == "https" && !uri.host.isNullOrBlank())
+            if (!isGitLabOrHttps) {
+                throw IOException("Release 附件地址无效")
+            }
+            val id = target.optLong("id", 1L)
+            return Release(tag, notes, url, id)
         } catch (error: JSONException) {
             throw IOException("Release 数据格式无效", error)
         } finally { connection.disconnect() }
