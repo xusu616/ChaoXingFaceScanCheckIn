@@ -1,3 +1,5 @@
+> 📦 **Release 下载提示**：请前往对应的 GitLab 仓库查看或下载 Release（GitHub 端暂不重复上传）👉 [https://gitlab.com/xusu616/ChaoXingFaceScanCheckIn/-/releases](https://gitlab.com/xusu616/ChaoXingFaceScanCheckIn/-/releases) （[GitLab 仓库主页](https://gitlab.com/xusu616/ChaoXingFaceScanCheckIn)）
+
 # FaceScan · 超星人脸与扫码实验 App
 
 **Android 本机运行，不需要购买服务器。** 当前版本为 `0.1.0-experimental`，支持 Android 8.0 及以上。
